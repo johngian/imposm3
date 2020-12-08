@@ -1,0 +1,24 @@
+Source: golang-github-omniscale-go-osm
+Priority: optional
+Maintainer: Yiannis Giannelos <jgiannelos@wikimedia.org>
+Uploaders: Yiannis Giannelos <jgiannelos@wikimedia.org>
+Build-Depends: debhelper (>= 11),
+               dh-golang,
+               golang-any,
+               golang-github-pkg-errors-dev,
+               golang-gogoprotobuf-dev,
+               golang-pretty-dev,
+               golang-yaml.v2-dev
+Standards-Version: 4.2.1
+XS-Go-Import-Path: github.com/omniscale/go-osm
+Testsuite: autopkgtest-pkg-go
+
+Package: golang-github-omniscale-go-osm-dev
+Architecture: all
+Depends: ${misc:Depends},
+         golang-github-pkg-errors-dev,
+         golang-gogoprotobuf-dev,
+         golang-pretty-dev,
+         golang-yaml.v2-dev
+Description:
+  Package osm provides basic types for OSM elements (nodes/ways/relations/etc).
