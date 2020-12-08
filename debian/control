@@ -1,0 +1,39 @@
+Source: imposm3
+Priority: optional
+Maintainer: Yiannis Giannelos <jgiannelos@wikimedia.org>
+Uploaders: Yiannis Giannelos <jgiannelos@wikimedia.org>
+Build-Depends: debhelper (>= 11),
+               dh-golang,
+               golang-any,
+               golang-github-pkg-errors-dev,
+               golang-gogoprotobuf-dev,
+               golang-pq-dev,
+               golang-yaml.v2-dev,
+               golang-github-omniscale-go-osm-dev,
+               golang-github-jmhodges-levigo-dev,
+               libgeos-dev,
+               libleveldb-dev
+Standards-Version: 4.2.1
+Homepage: https://github.com/omniscale/imposm3
+XS-Go-Import-Path: github.com/omniscale/imposm3
+Testsuite: autopkgtest-pkg-go
+
+Package: imposm3
+Architecture: any
+Built-Using: ${misc:Built-Using}
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         libgeos-dev,
+         libleveldb-dev
+Description: Imposm imports OpenStreetMap data into PostGIS
+ Imposm Imposm is an importer for OpenStreetMap data. It reads PBF files
+ and imports the data into PostgreSQL/PostGIS. It can also automatically
+ update the database with the latest changes from OSM.
+ .
+ It is designed to create databases that are optimized for rendering
+ (i.e. generating tiles or for WMS services).
+ .
+ Imposm >=3 is written in Go and it is a complete rewrite of the previous
+ Python implementation.  Configurations/mappings and cache files are not
+ compatible with Imposm 2, but they share a similar architecture.
+ .
