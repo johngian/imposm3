@@ -1,13 +1,13 @@
 package cache
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 
-	"github.com/jmhodges/levigo"
+	"github.com/go-redis/redis/v8"
 
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/cache/binary"
@@ -16,15 +16,14 @@ import (
 )
 
 type DiffCache struct {
-	Dir       string
 	Coords    *CoordsRefIndex    // Stores which ways a coord references
 	CoordsRel *CoordsRelRefIndex // Stores which relations a coord references
 	Ways      *WaysRefIndex      // Stores which relations a way references
 	opened    bool
 }
 
-func NewDiffCache(dir string) *DiffCache {
-	cache := &DiffCache{Dir: dir}
+func NewDiffCache() *DiffCache {
+	cache := &DiffCache{}
 	return cache
 }
 
@@ -57,17 +56,17 @@ func (c *DiffCache) Flush() {
 
 func (c *DiffCache) Open() error {
 	var err error
-	c.Coords, err = newCoordsRefIndex(filepath.Join(c.Dir, "coords_index"))
+	c.Coords, err = newCoordsRefIndex()
 	if err != nil {
 		c.Close()
 		return err
 	}
-	c.CoordsRel, err = newCoordsRelRefIndex(filepath.Join(c.Dir, "coords_rel_index"))
+	c.CoordsRel, err = newCoordsRelRefIndex()
 	if err != nil {
 		c.Close()
 		return err
 	}
-	c.Ways, err = newWaysRefIndex(filepath.Join(c.Dir, "ways_index"))
+	c.Ways, err = newWaysRefIndex()
 	if err != nil {
 		c.Close()
 		return err
@@ -77,33 +76,17 @@ func (c *DiffCache) Open() error {
 }
 
 func (c *DiffCache) Exists() bool {
-	if c.opened {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.Dir, "coords_index")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.Dir, "coords_rel_index")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.Dir, "ways_index")); !os.IsNotExist(err) {
-		return true
-	}
-	return false
+	return c.opened
 }
 
 func (c *DiffCache) Remove() error {
+	err := c.Coords.db.FlushAll(context.TODO()).Err()
+
+	if err != nil {
+		return err
+	}
 	if c.opened {
 		c.Close()
-	}
-	if err := os.RemoveAll(filepath.Join(c.Dir, "coords_index")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.Dir, "coords_rel_index")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.Dir, "ways_index")); err != nil {
-		return err
 	}
 	return nil
 }
@@ -193,10 +176,9 @@ type bunchRefCache struct {
 	waitWrite    sync.WaitGroup
 }
 
-func newRefIndex(path string, opts *cacheOptions) (*bunchRefCache, error) {
+func newRefIndex(db int) (*bunchRefCache, error) {
 	index := bunchRefCache{}
-	index.options = opts
-	err := index.open(path)
+	err := index.open(db)
 	if err != nil {
 		return nil, err
 	}
@@ -217,24 +199,24 @@ type WaysRefIndex struct {
 	*bunchRefCache
 }
 
-func newCoordsRefIndex(dir string) (*CoordsRefIndex, error) {
-	cache, err := newRefIndex(dir, &globalCacheOptions.CoordsIndex)
+func newCoordsRefIndex() (*CoordsRefIndex, error) {
+	cache, err := newRefIndex(14)
 	if err != nil {
 		return nil, err
 	}
 	return &CoordsRefIndex{cache}, nil
 }
 
-func newCoordsRelRefIndex(dir string) (*CoordsRelRefIndex, error) {
-	cache, err := newRefIndex(dir, &globalCacheOptions.CoordsIndex)
+func newCoordsRelRefIndex() (*CoordsRelRefIndex, error) {
+	cache, err := newRefIndex(15)
 	if err != nil {
 		return nil, err
 	}
 	return &CoordsRelRefIndex{cache}, nil
 }
 
-func newWaysRefIndex(dir string) (*WaysRefIndex, error) {
-	cache, err := newRefIndex(dir, &globalCacheOptions.WaysIndex)
+func newWaysRefIndex() (*WaysRefIndex, error) {
+	cache, err := newRefIndex(16)
 	if err != nil {
 		return nil, err
 	}
@@ -266,17 +248,17 @@ func (index *bunchRefCache) Get(id int64) []int64 {
 	if index.linearImport {
 		panic("programming error: get not supported in linearImport mode")
 	}
-	keyBuf := idToKeyBuf(index.getBunchID(id))
 
-	data, err := index.db.Get(index.ro, keyBuf)
-	if err != nil {
+	bunch_id := index.getBunchID(id)
+	data, err := index.db.Get(context.TODO(), strconv.FormatInt(bunch_id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		panic(err)
 	}
 
-	if data != nil {
+	if err != redis.Nil {
 		idRefs := idRefsPool.get()
 		defer idRefsPool.release(idRefs)
-		for _, idRef := range binary.UnmarshalIDRefsBunch2(data, idRefs) {
+		for _, idRef := range binary.UnmarshalIDRefsBunch2([]byte(data), idRefs) {
 			if idRef.ID == id {
 				return idRef.Refs
 			}
@@ -286,29 +268,28 @@ func (index *bunchRefCache) Get(id int64) []int64 {
 }
 
 func (index *bunchRefCache) Add(id, ref int64) error {
-	keyBuf := idToKeyBuf(index.getBunchID(id))
-
-	data, err := index.db.Get(index.ro, keyBuf)
-	if err != nil {
+	bunch_id := index.getBunchID(id)
+	data, err := index.db.Get(context.TODO(), strconv.FormatInt(bunch_id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return err
 	}
 
 	var idRefs []element.IDRefs
-	if data != nil {
+	if err != redis.Nil {
 		idRefs = idRefsPool.get()
 		defer idRefsPool.release(idRefs)
-		idRefs = binary.UnmarshalIDRefsBunch2(data, idRefs)
+		idRefs = binary.UnmarshalIDRefsBunch2([]byte(data), idRefs)
 	}
 
 	idRefBunch := idRefBunch{index.getBunchID(id), idRefs}
 	idRef := idRefBunch.getCreate(id)
 	idRef.Add(ref)
 
-	data = bytePool.get()
-	defer bytePool.release(data)
-	data = binary.MarshalIDRefsBunch2(idRefBunch.idRefs, data)
+	byte_data := bytePool.get()
+	defer bytePool.release(byte_data)
+	byte_data = binary.MarshalIDRefsBunch2(idRefBunch.idRefs, byte_data)
 
-	return index.db.Put(index.wo, keyBuf, data)
+	return index.db.Set(context.TODO(), strconv.FormatInt(bunch_id, 10), byte_data, 0).Err()
 }
 
 func (index *bunchRefCache) DeleteRef(id, ref int64) error {
@@ -316,17 +297,17 @@ func (index *bunchRefCache) DeleteRef(id, ref int64) error {
 		panic("programming error: delete not supported in linearImport mode")
 	}
 
-	keyBuf := idToKeyBuf(index.getBunchID(id))
+	bunch_id := index.getBunchID(id)
 
-	data, err := index.db.Get(index.ro, keyBuf)
-	if err != nil {
+	data, err := index.db.Get(context.TODO(), strconv.FormatInt(bunch_id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return err
 	}
 
-	if data != nil {
+	if err != redis.Nil {
 		idRefs := idRefsPool.get()
 		defer idRefsPool.release(idRefs)
-		idRefs = binary.UnmarshalIDRefsBunch2(data, idRefs)
+		idRefs = binary.UnmarshalIDRefsBunch2([]byte(data), idRefs)
 		idRefBunch := idRefBunch{index.getBunchID(id), idRefs}
 		idRef := idRefBunch.get(id)
 		if idRef != nil {
@@ -334,7 +315,7 @@ func (index *bunchRefCache) DeleteRef(id, ref int64) error {
 			data := bytePool.get()
 			defer bytePool.release(data)
 			data = binary.MarshalIDRefsBunch2(idRefs, data)
-			return index.db.Put(index.wo, keyBuf, data)
+			return index.db.Set(context.TODO(), strconv.FormatInt(bunch_id, 10), data, 0).Err()
 		}
 	}
 	return nil
@@ -345,17 +326,17 @@ func (index *bunchRefCache) Delete(id int64) error {
 		panic("programming error: delete not supported in linearImport mode")
 	}
 
-	keyBuf := idToKeyBuf(index.getBunchID(id))
+	bunch_id := index.getBunchID(id)
 
-	data, err := index.db.Get(index.ro, keyBuf)
-	if err != nil {
+	data, err := index.db.Get(context.TODO(), strconv.FormatInt(bunch_id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return err
 	}
 
-	if data != nil {
+	if err != redis.Nil {
 		idRefs := idRefsPool.get()
 		defer idRefsPool.release(idRefs)
-		idRefs = binary.UnmarshalIDRefsBunch2(data, idRefs)
+		idRefs = binary.UnmarshalIDRefsBunch2([]byte(data), idRefs)
 		idRefBunch := idRefBunch{index.getBunchID(id), idRefs}
 		idRef := idRefBunch.get(id)
 		if idRef != nil {
@@ -363,7 +344,7 @@ func (index *bunchRefCache) Delete(id int64) error {
 			data := bytePool.get()
 			defer bytePool.release(data)
 			data = binary.MarshalIDRefsBunch2(idRefs, data)
-			return index.db.Put(index.wo, keyBuf, data)
+			return index.db.Set(context.TODO(), strconv.FormatInt(bunch_id, 10), data, 0).Err()
 		}
 	}
 	return nil
@@ -471,14 +452,12 @@ type loadBunchItem struct {
 }
 
 type writeBunchItem struct {
-	bunchIDBuf []byte
-	data       []byte
+	bunchID int64
+	data    []byte
 }
 
 func (index *bunchRefCache) writeRefs(idRefs idRefBunches) error {
-	batch := levigo.NewWriteBatch()
-	defer batch.Close()
-
+	pipeline := index.cache.db.Pipeline()
 	wg := sync.WaitGroup{}
 	putc := make(chan writeBunchItem)
 	loadc := make(chan loadBunchItem)
@@ -487,10 +466,9 @@ func (index *bunchRefCache) writeRefs(idRefs idRefBunches) error {
 		wg.Add(1)
 		go func() {
 			for item := range loadc {
-				keyBuf := idToKeyBuf(item.bunchID)
 				putc <- writeBunchItem{
-					keyBuf,
-					index.loadMergeMarshal(keyBuf, item.bunch.idRefs),
+					item.bunchID,
+					index.loadMergeMarshal(item.bunchID, item.bunch.idRefs),
 				}
 			}
 			wg.Done()
@@ -507,7 +485,7 @@ func (index *bunchRefCache) writeRefs(idRefs idRefBunches) error {
 	}()
 
 	for item := range putc {
-		batch.Put(item.bunchIDBuf, item.data)
+		pipeline.Set(context.TODO(), strconv.FormatInt(item.bunchID, 10), item.data, 0)
 		bytePool.release(item.data)
 	}
 
@@ -519,7 +497,8 @@ func (index *bunchRefCache) writeRefs(idRefs idRefBunches) error {
 		case idRefBunchesPool <- idRefs:
 		}
 	}()
-	return index.db.Write(index.wo, batch)
+	_, err := pipeline.Exec(context.TODO())
+	return err
 }
 
 func mergeBunch(bunch, newBunch []element.IDRefs) []element.IDRefs {
@@ -565,18 +544,18 @@ NextIDRef:
 
 // loadMergeMarshal loads an existing bunch, merges the IDRefs and
 // marshals the result again.
-func (index *bunchRefCache) loadMergeMarshal(keyBuf []byte, newBunch []element.IDRefs) []byte {
-	data, err := index.db.Get(index.ro, keyBuf)
-	if err != nil {
+func (index *bunchRefCache) loadMergeMarshal(bunch_id int64, newBunch []element.IDRefs) []byte {
+	data, err := index.db.Get(context.TODO(), strconv.FormatInt(bunch_id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		panic(err)
 	}
 
 	var bunch []element.IDRefs
 
-	if data != nil {
+	if err != redis.Nil {
 		bunch = idRefsPool.get()
 		defer idRefsPool.release(bunch)
-		bunch = binary.UnmarshalIDRefsBunch2(data, bunch)
+		bunch = binary.UnmarshalIDRefsBunch2([]byte(data), bunch)
 	}
 
 	if bunch == nil {
@@ -585,9 +564,9 @@ func (index *bunchRefCache) loadMergeMarshal(keyBuf []byte, newBunch []element.I
 		bunch = mergeBunch(bunch, newBunch)
 	}
 
-	data = bytePool.get()
-	data = binary.MarshalIDRefsBunch2(bunch, data)
-	return data
+	byte_data := bytePool.get()
+	byte_data = binary.MarshalIDRefsBunch2(bunch, byte_data)
+	return byte_data
 }
 
 // pools to reuse memory

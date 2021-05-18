@@ -1,9 +1,8 @@
 package cache
 
 import (
-	"io/ioutil"
+	"context"
 	"math/rand"
-	"os"
 	"sort"
 	"testing"
 
@@ -71,10 +70,8 @@ func TestReadWriteDeltaCoordsLinearImport(t *testing.T) {
 }
 
 func checkReadWriteDeltaCoords(t *testing.T, withLinearImport bool) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newDeltaCoordsCache(cacheDir)
+	cache, err := newDeltaCoordsCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -123,6 +120,7 @@ func checkReadWriteDeltaCoords(t *testing.T, withLinearImport bool) {
 	}
 	insertAndCheck(t, cache, 999999, 10, 10)
 	deleteAndCheck(t, cache, 999999)
+	cache.db.FlushDB(context.TODO())
 }
 
 func insertAndCheck(t *testing.T, cache *DeltaCoordsCache, id int64, lon, lat float64) {
@@ -157,10 +155,8 @@ func deleteAndCheck(t *testing.T, cache *DeltaCoordsCache, id int64) {
 }
 
 func TestSingleUpdate(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newDeltaCoordsCache(cacheDir)
+	cache, err := newDeltaCoordsCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -185,17 +181,17 @@ func TestSingleUpdate(t *testing.T) {
 	insertAndCheck(t, cache, 3, 3, 3)
 	insertAndCheck(t, cache, 4, 4, 4)
 
+	cache.db.FlushDB(context.TODO())
+
 }
 
 func BenchmarkWriteDeltaCoords(b *testing.B) {
 	b.StopTimer()
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
-
-	cache, err := newDeltaCoordsCache(cacheDir)
+	cache, err := newDeltaCoordsCache(20)
 	if err != nil {
 		b.Fatal()
 	}
+	defer cache.db.FlushDB(context.TODO())
 	defer cache.Close()
 
 	nodes := make([]osm.Node, 10000)
@@ -217,10 +213,8 @@ func BenchmarkWriteDeltaCoords(b *testing.B) {
 
 func BenchmarkReadDeltaCoords(b *testing.B) {
 	b.StopTimer()
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newDeltaCoordsCache(cacheDir)
+	cache, err := newDeltaCoordsCache(20)
 	if err != nil {
 		b.Fatal()
 	}
@@ -246,4 +240,6 @@ func BenchmarkReadDeltaCoords(b *testing.B) {
 			}
 		}
 	}
+
+	cache.db.FlushDB(context.TODO())
 }

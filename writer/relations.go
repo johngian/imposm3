@@ -55,8 +55,8 @@ func NewRelationWriter(
 		polygonMatcher:        matcher,
 		relationMatcher:       relMatcher,
 		relationMemberMatcher: relMemberMatcher,
-		rel:    rel,
-		maxGap: maxGap,
+		rel:                   rel,
+		maxGap:                maxGap,
 	}
 	rw.OsmElemWriter.writer = &rw
 	return &rw.OsmElemWriter

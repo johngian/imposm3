@@ -16,12 +16,11 @@ import (
 var flags = flag.NewFlagSet("query-cache", flag.ExitOnError)
 
 var (
-	nodeIDs  = flags.String("node", "", "node")
-	wayIDs   = flags.String("way", "", "way")
-	relIDs   = flags.String("rel", "", "relation")
-	full     = flags.Bool("full", false, "recurse into relations/ways")
-	deps     = flags.Bool("deps", false, "show dependent ways/relations")
-	cachedir = flags.String("cachedir", "/tmp/imposm", "cache directory")
+	nodeIDs = flags.String("node", "", "node")
+	wayIDs  = flags.String("way", "", "way")
+	relIDs  = flags.String("rel", "", "relation")
+	full    = flags.Bool("full", false, "recurse into relations/ways")
+	deps    = flags.Bool("deps", false, "show dependent ways/relations")
 )
 
 type nodes map[string]*node
@@ -169,12 +168,12 @@ func Query(args []string) {
 		log.Fatal(err)
 	}
 
-	osmCache := cache.NewOSMCache(*cachedir)
+	osmCache := cache.NewOSMCache()
 	err = osmCache.Open()
 	if err != nil {
 		log.Fatal(err)
 	}
-	diffCache := cache.NewDiffCache(*cachedir)
+	diffCache := cache.NewDiffCache()
 	err = diffCache.Open()
 	if err != nil {
 		log.Fatal(err)

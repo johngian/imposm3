@@ -2,9 +2,12 @@ package cache
 
 import (
 	"container/list"
+	"context"
 	"sort"
+	"strconv"
 	"sync"
 
+	"github.com/go-redis/redis/v8"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/cache/binary"
 )
@@ -83,10 +86,9 @@ type DeltaCoordsCache struct {
 	readOnly     bool
 }
 
-func newDeltaCoordsCache(path string) (*DeltaCoordsCache, error) {
+func newDeltaCoordsCache(db int) (*DeltaCoordsCache, error) {
 	coordsCache := DeltaCoordsCache{}
-	coordsCache.options = &globalCacheOptions.Coords.cacheOptions
-	err := coordsCache.open(path)
+	err := coordsCache.open(db)
 	if err != nil {
 		return nil, err
 	}
@@ -272,16 +274,15 @@ func (c *DeltaCoordsCache) PutCoords(nodes []osm.Node) error {
 }
 
 func (c *DeltaCoordsCache) putCoordsPacked(bunchID int64, nodes []osm.Node) error {
-	keyBuf := idToKeyBuf(bunchID)
 
 	if len(nodes) == 0 {
-		return c.db.Delete(c.wo, keyBuf)
+		return c.db.Del(context.TODO(), strconv.FormatInt(bunchID, 10)).Err()
 	}
 
 	data := make([]byte, 512)
 	data = binary.MarshalDeltaNodes(nodes, data)
 
-	err := c.db.Put(c.wo, keyBuf, data)
+	err := c.db.Set(context.TODO(), strconv.FormatInt(bunchID, 10), data, 0).Err()
 	if err != nil {
 		return err
 	}
@@ -290,17 +291,16 @@ func (c *DeltaCoordsCache) putCoordsPacked(bunchID int64, nodes []osm.Node) erro
 }
 
 func (c *DeltaCoordsCache) getCoordsPacked(bunchID int64, nodes []osm.Node) ([]osm.Node, error) {
-	keyBuf := idToKeyBuf(bunchID)
 
-	data, err := c.db.Get(c.ro, keyBuf)
-	if err != nil {
-		return nil, err
-	}
-	if data == nil {
+	data, err := c.db.Get(context.TODO(), strconv.FormatInt(bunchID, 10)).Result()
+	if err == redis.Nil {
 		// clear before returning
 		return nodes[:0], nil
 	}
-	nodes, err = binary.UnmarshalDeltaNodes(data, nodes)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err = binary.UnmarshalDeltaNodes([]byte(data), nodes)
 	if err != nil {
 		return nil, err
 	}

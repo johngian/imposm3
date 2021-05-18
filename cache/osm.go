@@ -1,12 +1,13 @@
 package cache
 
 import (
+	"context"
 	bin "encoding/binary"
 	"errors"
+	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/jmhodges/levigo"
+	"github.com/go-redis/redis/v8"
 	osm "github.com/omniscale/go-osm"
 )
 
@@ -17,7 +18,6 @@ var (
 const SKIP int64 = -1
 
 type OSMCache struct {
-	dir       string
 	Coords    *DeltaCoordsCache
 	Ways      *WaysCache
 	Nodes     *NodesCache
@@ -44,31 +44,29 @@ func (c *OSMCache) Close() {
 	}
 }
 
-func NewOSMCache(dir string) *OSMCache {
-	cache := &OSMCache{dir: dir}
+func NewOSMCache() *OSMCache {
+	cache := &OSMCache{}
 	return cache
 }
 
 func (c *OSMCache) Open() error {
-	err := os.MkdirAll(c.dir, 0755)
+
+	var err error
+	c.Coords, err = newDeltaCoordsCache(10)
 	if err != nil {
 		return err
 	}
-	c.Coords, err = newDeltaCoordsCache(filepath.Join(c.dir, "coords"))
-	if err != nil {
-		return err
-	}
-	c.Nodes, err = newNodesCache(filepath.Join(c.dir, "nodes"))
+	c.Nodes, err = newNodesCache(11)
 	if err != nil {
 		c.Close()
 		return err
 	}
-	c.Ways, err = newWaysCache(filepath.Join(c.dir, "ways"))
+	c.Ways, err = newWaysCache(12)
 	if err != nil {
 		c.Close()
 		return err
 	}
-	c.Relations, err = newRelationsCache(filepath.Join(c.dir, "relations"))
+	c.Relations, err = newRelationsCache(13)
 	if err != nil {
 		c.Close()
 		return err
@@ -78,46 +76,20 @@ func (c *OSMCache) Open() error {
 }
 
 func (c *OSMCache) Exists() bool {
-	if c.opened {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.dir, "coords")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.dir, "nodes")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.dir, "ways")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.dir, "relations")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(c.dir, "inserted_ways")); !os.IsNotExist(err) {
-		return true
-	}
-	return false
+	return c.opened
 }
 
 func (c *OSMCache) Remove() error {
+	err := c.Coords.db.FlushAll(context.TODO()).Err()
+
+	if err != nil {
+		return err
+	}
+
 	if c.opened {
 		c.Close()
 	}
-	if err := os.RemoveAll(filepath.Join(c.dir, "coords")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.dir, "nodes")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.dir, "ways")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.dir, "relations")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(c.dir, "inserted_ways")); err != nil {
-		return err
-	}
+
 	return nil
 }
 
@@ -149,46 +121,26 @@ func (c *OSMCache) FirstMemberIsCached(members []osm.Member) (bool, error) {
 }
 
 type cache struct {
-	db      *levigo.DB
-	options *cacheOptions
-	cache   *levigo.Cache
-	wo      *levigo.WriteOptions
-	ro      *levigo.ReadOptions
+	db *redis.Client
 }
 
-func (c *cache) open(path string) error {
-	opts := levigo.NewOptions()
-	opts.SetCreateIfMissing(true)
-	if c.options.CacheSizeM > 0 {
-		c.cache = levigo.NewLRUCache(c.options.CacheSizeM * 1024 * 1024)
-		opts.SetCache(c.cache)
-	}
-	if c.options.MaxOpenFiles > 0 {
-		opts.SetMaxOpenFiles(c.options.MaxOpenFiles)
-	}
-	if c.options.BlockRestartInterval > 0 {
-		opts.SetBlockRestartInterval(c.options.BlockRestartInterval)
-	}
-	if c.options.WriteBufferSizeM > 0 {
-		opts.SetWriteBufferSize(c.options.WriteBufferSizeM * 1024 * 1024)
-	}
-	if c.options.BlockSizeK > 0 {
-		opts.SetBlockSize(c.options.BlockSizeK * 1024)
-	}
-	if c.options.MaxFileSizeM > 0 {
-		// max file size option is only available with LevelDB 1.21 and higher
-		// build with -tags="ldppost121" to enable this option.
-		setMaxFileSize(opts, c.options.MaxFileSizeM*1024*1024)
+func (c *cache) open(db int) error {
+
+	env_url, exists := os.LookupEnv("IMPOSM_CACHE_URL")
+
+	if !exists {
+		panic("IMPOSM_CACHE_URL is undefined")
 	}
 
-	db, err := levigo.Open(path, opts)
+	cache_url := fmt.Sprintf("%s/%d", env_url, db)
+
+	opt, err := redis.ParseURL(cache_url)
 	if err != nil {
-		return err
+		panic(err)
 	}
-	c.db = db
-	c.wo = levigo.NewWriteOptions()
-	c.ro = levigo.NewReadOptions()
 
+	rdb := redis.NewClient(opt)
+	c.db = rdb
 	return nil
 }
 
@@ -203,20 +155,5 @@ func idFromKeyBuf(buf []byte) int64 {
 }
 
 func (c *cache) Close() {
-	if c.ro != nil {
-		c.ro.Close()
-		c.ro = nil
-	}
-	if c.wo != nil {
-		c.wo.Close()
-		c.wo = nil
-	}
-	if c.db != nil {
-		c.db.Close()
-		c.db = nil
-	}
-	if c.cache != nil {
-		c.cache.Close()
-		c.cache = nil
-	}
+	c.db.Close()
 }

@@ -1,7 +1,10 @@
 package cache
 
 import (
-	"github.com/jmhodges/levigo"
+	"context"
+	"strconv"
+
+	"github.com/go-redis/redis/v8"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/cache/binary"
 )
@@ -10,10 +13,9 @@ type RelationsCache struct {
 	cache
 }
 
-func newRelationsCache(path string) (*RelationsCache, error) {
+func newRelationsCache(db int) (*RelationsCache, error) {
 	cache := RelationsCache{}
-	cache.options = &globalCacheOptions.Relations
-	err := cache.open(path)
+	err := cache.open(db)
 	if err != nil {
 		return nil, err
 	}
@@ -24,17 +26,15 @@ func (p *RelationsCache) PutRelation(relation *osm.Relation) error {
 	if relation.ID == SKIP {
 		return nil
 	}
-	keyBuf := idToKeyBuf(relation.ID)
 	data, err := binary.MarshalRelation(relation)
 	if err != nil {
 		return err
 	}
-	return p.db.Put(p.wo, keyBuf, data)
+	return p.db.Set(context.TODO(), strconv.FormatInt(relation.ID, 10), data, 0).Err()
 }
 
 func (p *RelationsCache) PutRelations(rels []osm.Relation) error {
-	batch := levigo.NewWriteBatch()
-	defer batch.Close()
+	pipeline := p.cache.db.Pipeline()
 
 	for _, rel := range rels {
 		if rel.ID == SKIP {
@@ -43,51 +43,64 @@ func (p *RelationsCache) PutRelations(rels []osm.Relation) error {
 		if len(rel.Tags) == 0 {
 			continue
 		}
-		keyBuf := idToKeyBuf(rel.ID)
 		data, err := binary.MarshalRelation(&rel)
 		if err != nil {
 			return err
 		}
-		batch.Put(keyBuf, data)
+		pipeline.Set(context.TODO(), strconv.FormatInt(rel.ID, 10), data, 0)
 	}
-	return p.db.Write(p.wo, batch)
+	_, err := pipeline.Exec(context.TODO())
+	return err
 }
 
 func (p *RelationsCache) Iter() chan *osm.Relation {
 	rels := make(chan *osm.Relation)
 	go func() {
-		ro := levigo.NewReadOptions()
-		ro.SetFillCache(false)
-		it := p.db.NewIterator(ro)
-		// we need to Close the iter before closing the
-		// chan (and thus signaling that we are done)
-		// to avoid race where db is closed before the iterator
-		defer close(rels)
-		defer it.Close()
-		it.SeekToFirst()
-		for ; it.Valid(); it.Next() {
-			rel, err := binary.UnmarshalRelation(it.Value())
+		var cursor uint64
+		var n int
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = p.cache.db.Scan(context.TODO(), cursor, "*", 10).Result()
 			if err != nil {
 				panic(err)
 			}
-			rel.ID = idFromKeyBuf(it.Key())
+			n += len(keys)
+			if cursor == 0 {
+				close(rels)
+				break
+			}
+			values, err := p.cache.db.MGet(context.TODO(), keys...).Result()
+			if err != nil {
+				panic(err)
+			}
+			for i, key := range keys {
+				rel, err := binary.UnmarshalRelation([]byte(values[i].(string)))
+				if err != nil {
+					panic(err)
+				}
+				id, err := strconv.ParseInt(key, 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				rel.ID = id
+				rels <- rel
+			}
 
-			rels <- rel
 		}
 	}()
 	return rels
 }
 
 func (p *RelationsCache) GetRelation(id int64) (*osm.Relation, error) {
-	keyBuf := idToKeyBuf(id)
-	data, err := p.db.Get(p.ro, keyBuf)
-	if err != nil {
+	data, err := p.db.Get(context.TODO(), strconv.FormatInt(id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-	if data == nil {
+	if err == redis.Nil {
 		return nil, NotFound
 	}
-	relation, err := binary.UnmarshalRelation(data)
+	relation, err := binary.UnmarshalRelation([]byte(data))
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +109,5 @@ func (p *RelationsCache) GetRelation(id int64) (*osm.Relation, error) {
 }
 
 func (p *RelationsCache) DeleteRelation(id int64) error {
-	keyBuf := idToKeyBuf(id)
-	return p.db.Delete(p.wo, keyBuf)
+	return p.cache.db.Del(context.TODO(), strconv.FormatInt(id, 10)).Err()
 }

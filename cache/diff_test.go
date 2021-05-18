@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -14,7 +15,7 @@ func TestDiffCache(t *testing.T) {
 	cacheDir, _ := ioutil.TempDir("", "imposm_test")
 	defer os.RemoveAll(cacheDir)
 
-	cache, err := newCoordsRefIndex(cacheDir)
+	cache, err := newCoordsRefIndex()
 	if err != nil {
 		t.Fatal()
 	}
@@ -50,10 +51,7 @@ func TestDiffCache(t *testing.T) {
 }
 
 func TestWriteDiff(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
-
-	cache, err := newRefIndex(cacheDir, &globalCacheOptions.CoordsIndex)
+	cache, err := newRefIndex(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -74,14 +72,13 @@ func TestWriteDiff(t *testing.T) {
 			t.Fatal(refs)
 		}
 	}
+	cache.db.FlushDB(context.TODO())
 }
 
 func BenchmarkWriteDiff(b *testing.B) {
 	b.StopTimer()
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newRefIndex(cacheDir, &globalCacheOptions.CoordsIndex)
+	cache, err := newRefIndex(20)
 	if err != nil {
 		b.Fatal()
 	}

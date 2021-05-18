@@ -1,34 +1,16 @@
 package cache
 
 import (
-	"io/ioutil"
+	"context"
 	"math/rand"
-	"os"
 	"testing"
 
 	osm "github.com/omniscale/go-osm"
 )
 
-func TestCreateCache(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
-
-	cache, err := newNodesCache(cacheDir)
-	if err != nil {
-		t.Fatal()
-	}
-	defer cache.Close()
-
-	if stat, err := os.Stat(cacheDir); err != nil || !stat.IsDir() {
-		t.Error("cache dir not created")
-	}
-}
-
 func TestReadWriteNode(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newNodesCache(cacheDir)
+	cache, err := newNodesCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -40,7 +22,7 @@ func TestReadWriteNode(t *testing.T) {
 	cache.PutNode(node)
 	cache.Close()
 
-	cache, err = newNodesCache(cacheDir)
+	cache, err = newNodesCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -56,13 +38,13 @@ func TestReadWriteNode(t *testing.T) {
 		t.Error("missing node not nil")
 	}
 
+	cache.db.FlushDB(context.TODO())
+
 }
 
 func TestReadWriteWay(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newWaysCache(cacheDir)
+	cache, err := newWaysCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -75,7 +57,7 @@ func TestReadWriteWay(t *testing.T) {
 	cache.PutWay(way)
 	cache.Close()
 
-	cache, err = newWaysCache(cacheDir)
+	cache, err = newWaysCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -91,13 +73,12 @@ func TestReadWriteWay(t *testing.T) {
 		data.Refs[1] != 23948234 {
 		t.Errorf("unexpected result of GetWay: %#v", data)
 	}
+
+	cache.db.FlushDB(context.TODO())
 }
 
 func TestReadMissingWay(t *testing.T) {
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
-
-	cache, err := newWaysCache(cacheDir)
+	cache, err := newWaysCache(20)
 	if err != nil {
 		t.Fatal()
 	}
@@ -108,14 +89,14 @@ func TestReadMissingWay(t *testing.T) {
 	if data != nil {
 		t.Errorf("missing way did not return nil")
 	}
+
+	cache.db.FlushDB(context.TODO())
 }
 
 func BenchmarkWriteWay(b *testing.B) {
 	b.StopTimer()
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
 
-	cache, err := newWaysCache(cacheDir)
+	cache, err := newWaysCache(20)
 	if err != nil {
 		b.Fatal()
 	}
@@ -130,14 +111,13 @@ func BenchmarkWriteWay(b *testing.B) {
 		way.ID = int64(i)
 		cache.PutWay(way)
 	}
+
+	cache.db.FlushDB(context.TODO())
 }
 
 func BenchmarkReadWay(b *testing.B) {
 	b.StopTimer()
-	cacheDir, _ := ioutil.TempDir("", "imposm_test")
-	defer os.RemoveAll(cacheDir)
-
-	cache, err := newWaysCache(cacheDir)
+	cache, err := newWaysCache(20)
 	if err != nil {
 		b.Fatal()
 	}
@@ -155,7 +135,7 @@ func BenchmarkReadWay(b *testing.B) {
 			b.Fail()
 		}
 	}
-
+	cache.db.FlushDB(context.TODO())
 }
 
 func TestIDs(t *testing.T) {

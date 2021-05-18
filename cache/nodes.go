@@ -1,7 +1,10 @@
 package cache
 
 import (
-	"github.com/jmhodges/levigo"
+	"context"
+	"strconv"
+
+	"github.com/go-redis/redis/v8"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/cache/binary"
 )
@@ -10,10 +13,9 @@ type NodesCache struct {
 	cache
 }
 
-func newNodesCache(path string) (*NodesCache, error) {
+func newNodesCache(db int) (*NodesCache, error) {
 	cache := NodesCache{}
-	cache.options = &globalCacheOptions.Nodes
-	err := cache.open(path)
+	err := cache.open(db)
 	if err != nil {
 		return nil, err
 	}
@@ -27,17 +29,15 @@ func (p *NodesCache) PutNode(node *osm.Node) error {
 	if node.Tags == nil {
 		return nil
 	}
-	keyBuf := idToKeyBuf(node.ID)
 	data, err := binary.MarshalNode(node)
 	if err != nil {
 		return err
 	}
-	return p.db.Put(p.wo, keyBuf, data)
+	return p.db.Set(context.TODO(), strconv.FormatInt(node.ID, 10), data, 0).Err()
 }
 
 func (p *NodesCache) PutNodes(nodes []osm.Node) (int, error) {
-	batch := levigo.NewWriteBatch()
-	defer batch.Close()
+	pipeline := p.cache.db.Pipeline()
 
 	var n int
 	for _, node := range nodes {
@@ -47,27 +47,28 @@ func (p *NodesCache) PutNodes(nodes []osm.Node) (int, error) {
 		if len(node.Tags) == 0 {
 			continue
 		}
-		keyBuf := idToKeyBuf(node.ID)
 		data, err := binary.MarshalNode(&node)
 		if err != nil {
 			return 0, err
 		}
-		batch.Put(keyBuf, data)
+		pipeline.Set(context.TODO(), strconv.FormatInt(node.ID, 10), data, 0)
 		n++
 	}
-	return n, p.db.Write(p.wo, batch)
+
+	_, err := pipeline.Exec(context.TODO())
+
+	return n, err
 }
 
 func (p *NodesCache) GetNode(id int64) (*osm.Node, error) {
-	keyBuf := idToKeyBuf(id)
-	data, err := p.db.Get(p.ro, keyBuf)
-	if err != nil {
+	data, err := p.db.Get(context.TODO(), strconv.FormatInt(id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-	if data == nil {
+	if err == redis.Nil {
 		return nil, NotFound
 	}
-	node, err := binary.UnmarshalNode(data)
+	node, err := binary.UnmarshalNode([]byte(data))
 	if err != nil {
 		return nil, err
 	}
@@ -76,30 +77,46 @@ func (p *NodesCache) GetNode(id int64) (*osm.Node, error) {
 }
 
 func (p *NodesCache) DeleteNode(id int64) error {
-	keyBuf := idToKeyBuf(id)
-	return p.db.Delete(p.wo, keyBuf)
+	return p.cache.db.Del(context.TODO(), strconv.FormatInt(id, 10)).Err()
 }
 
 func (p *NodesCache) Iter() chan *osm.Node {
 	nodes := make(chan *osm.Node)
 	go func() {
-		ro := levigo.NewReadOptions()
-		ro.SetFillCache(false)
-		it := p.db.NewIterator(ro)
-		// we need to Close the iter before closing the
-		// chan (and thus signaling that we are done)
-		// to avoid race where db is closed before the iterator
-		defer close(nodes)
-		defer it.Close()
-		it.SeekToFirst()
-		for ; it.Valid(); it.Next() {
-			node, err := binary.UnmarshalNode(it.Value())
+
+		var cursor uint64
+		var n int
+
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = p.cache.db.Scan(context.TODO(), cursor, "*", 10).Result()
 			if err != nil {
 				panic(err)
 			}
-			node.ID = idFromKeyBuf(it.Key())
+			n += len(keys)
+			if cursor == 0 {
+				close(nodes)
+				break
+			}
 
-			nodes <- node
+			values, err := p.cache.db.MGet(context.TODO(), keys...).Result()
+			if err != nil {
+				panic(err)
+			}
+
+			for i, key := range keys {
+				node, err := binary.UnmarshalNode([]byte(values[i].(string)))
+				if err != nil {
+					panic(err)
+				}
+				id, err := strconv.ParseInt(key, 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				node.ID = id
+				nodes <- node
+			}
 		}
 	}()
 	return nodes

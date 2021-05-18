@@ -59,14 +59,14 @@ func Run(baseOpts config.Base) {
 	)
 	nextSeq := downloader.Sequences()
 
-	osmCache := cache.NewOSMCache(baseOpts.CacheDir)
+	osmCache := cache.NewOSMCache()
 	err = osmCache.Open()
 	if err != nil {
 		log.Fatal("[fatal] Opening OSM cache:", err)
 	}
 	defer osmCache.Close()
 
-	diffCache := cache.NewDiffCache(baseOpts.CacheDir)
+	diffCache := cache.NewDiffCache()
 	err = diffCache.Open()
 	if err != nil {
 		log.Fatal("[fatal] Opening diff cache:", err)

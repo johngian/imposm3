@@ -72,7 +72,7 @@ func Import(importOpts config.Import) {
 		defer db.Close()
 	}
 
-	osmCache := cache.NewOSMCache(baseOpts.CacheDir)
+	osmCache := cache.NewOSMCache()
 
 	if importOpts.Read != "" && osmCache.Exists() {
 		if importOpts.Overwritecache {
@@ -158,7 +158,7 @@ func Import(importOpts config.Import) {
 
 		var diffCache *cache.DiffCache
 		if importOpts.Diff {
-			diffCache = cache.NewDiffCache(baseOpts.CacheDir)
+			diffCache = cache.NewDiffCache()
 			if err = diffCache.Remove(); err != nil {
 				log.Fatal(err)
 			}

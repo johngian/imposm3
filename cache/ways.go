@@ -1,7 +1,10 @@
 package cache
 
 import (
-	"github.com/jmhodges/levigo"
+	"context"
+	"strconv"
+
+	"github.com/go-redis/redis/v8"
 	osm "github.com/omniscale/go-osm"
 	"github.com/omniscale/imposm3/cache/binary"
 )
@@ -10,10 +13,9 @@ type WaysCache struct {
 	cache
 }
 
-func newWaysCache(path string) (*WaysCache, error) {
+func newWaysCache(db int) (*WaysCache, error) {
 	cache := WaysCache{}
-	cache.options = &globalCacheOptions.Ways
-	err := cache.open(path)
+	err := cache.open(db)
 	if err != nil {
 		return nil, err
 	}
@@ -24,42 +26,38 @@ func (c *WaysCache) PutWay(way *osm.Way) error {
 	if way.ID == SKIP {
 		return nil
 	}
-	keyBuf := idToKeyBuf(way.ID)
 	data, err := binary.MarshalWay(way)
 	if err != nil {
 		return err
 	}
-	return c.db.Put(c.wo, keyBuf, data)
+	return c.db.Set(context.TODO(), strconv.FormatInt(way.ID, 10), data, 0).Err()
 }
 
 func (c *WaysCache) PutWays(ways []osm.Way) error {
-	batch := levigo.NewWriteBatch()
-	defer batch.Close()
-
+	pipeline := c.cache.db.Pipeline()
 	for _, way := range ways {
 		if way.ID == SKIP {
 			continue
 		}
-		keyBuf := idToKeyBuf(way.ID)
 		data, err := binary.MarshalWay(&way)
 		if err != nil {
 			return err
 		}
-		batch.Put(keyBuf, data)
+		pipeline.Set(context.TODO(), strconv.FormatInt(way.ID, 10), data, 0)
 	}
-	return c.db.Write(c.wo, batch)
+	_, err := pipeline.Exec(context.TODO())
+	return err
 }
 
 func (c *WaysCache) GetWay(id int64) (*osm.Way, error) {
-	keyBuf := idToKeyBuf(id)
-	data, err := c.db.Get(c.ro, keyBuf)
-	if err != nil {
+	data, err := c.db.Get(context.TODO(), strconv.FormatInt(id, 10)).Result()
+	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-	if data == nil {
+	if err == redis.Nil {
 		return nil, NotFound
 	}
-	way, err := binary.UnmarshalWay(data)
+	way, err := binary.UnmarshalWay([]byte(data))
 	if err != nil {
 		return nil, err
 	}
@@ -68,30 +66,46 @@ func (c *WaysCache) GetWay(id int64) (*osm.Way, error) {
 }
 
 func (c *WaysCache) DeleteWay(id int64) error {
-	keyBuf := idToKeyBuf(id)
-	return c.db.Delete(c.wo, keyBuf)
+	return c.cache.db.Del(context.TODO(), strconv.FormatInt(id, 10)).Err()
 }
 
 func (c *WaysCache) Iter() chan *osm.Way {
 	ways := make(chan *osm.Way, 1024)
 	go func() {
-		ro := levigo.NewReadOptions()
-		ro.SetFillCache(false)
-		it := c.db.NewIterator(ro)
-		// we need to Close the iter before closing the
-		// chan (and thus signaling that we are done)
-		// to avoid race where db is closed before the iterator
-		defer close(ways)
-		defer it.Close()
-		it.SeekToFirst()
-		for ; it.Valid(); it.Next() {
-			way, err := binary.UnmarshalWay(it.Value())
+		var cursor uint64
+		var n int
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = c.cache.db.Scan(context.TODO(), cursor, "*", 10).Result()
 			if err != nil {
 				panic(err)
 			}
-			way.ID = idFromKeyBuf(it.Key())
-			ways <- way
+			n += len(keys)
+			if cursor == 0 {
+				close(ways)
+				break
+			}
+
+			values, err := c.cache.db.MGet(context.TODO(), keys...).Result()
+			if err != nil {
+				panic(err)
+			}
+
+			for i, key := range keys {
+				way, err := binary.UnmarshalWay([]byte(values[i].(string)))
+				if err != nil {
+					panic(err)
+				}
+				id, err := strconv.ParseInt(key, 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				way.ID = id
+				ways <- way
+			}
 		}
+
 	}()
 	return ways
 }
